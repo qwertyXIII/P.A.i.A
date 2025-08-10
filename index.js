@@ -59,7 +59,7 @@ function logWithDate(...args) {
 // === Загрузка конфига из config.json ===
 function loadConfig() {
     if (!fs.existsSync(configPath)) {
-        logWithDate('config.json не найден.');
+        logWithDate('config.json не найден. Создайте файл с apiId, apiHash и API.');
         process.exit(1);
     }
     try {
@@ -87,7 +87,7 @@ function loadHistory() {
     if (fs.existsSync(historyPath)) {
         try {
             const data = fs.readFileSync(historyPath, 'utf8');
-            logWithDate('Загрузка контекста из файла history.json');
+            logWithDate('Загрузка истории из файла history.json');
             return JSON.parse(data);
         } catch (e) {
             logWithDate('Ошибка чтения history.json, создаётся пустая история:', e);
@@ -101,7 +101,7 @@ function loadHistory() {
 function saveHistory(history) {
     try {
         fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf8');
-        logWithDate(`Контекст для ${userId} сохранен.`);
+        logWithDate('История успешно сохранена');
     } catch (e) {
         logWithDate('Ошибка сохранения history.json:', e);
     }
@@ -173,6 +173,11 @@ async function main() {
     fs.writeFileSync(stringSessionFile, client.session.save());
     logWithDate('Сессия сохранена в файл');
 
+    // Получаем свой ID, чтобы игнорировать собственные сообщения
+    const me = await client.getMe();
+    const myId = me.id.value;
+    logWithDate(`Собственный ID пользователя: ${myId}`);
+
     // === Обработчик входящих сообщений ===
     client.addEventHandler(async (event) => {
         try {
@@ -184,14 +189,25 @@ async function main() {
 
             const sender = await message.getSender();
 
+            if (!sender) {
+                logWithDate('Не удалось получить отправителя сообщения');
+                return;
+            }
+
             // Игнорируем сообщения от ботов
-            if (sender?.bot) {
+            if (sender.bot) {
                 logWithDate(`Игнорировано сообщение от бота с ID ${sender.id?.value}`);
                 return;
             }
+
+            // Игнорируем собственные сообщения
+            if (sender.id.value === myId) {
+                logWithDate('Игнорируем собственное сообщение');
+                return;
+            }
             
-            const fullName = [sender?.firstName, sender?.lastName, sender?.username ? `@${sender.username}` : null].filter(Boolean).join(' ');
-            const userId = sender?.id?.value || 'unknown';
+            const fullName = [sender.firstName, sender.lastName, sender.username ? `@${sender.username}` : null].filter(Boolean).join(' ');
+            const userId = sender.id.value;
             const text = message.message;
 
             logWithDate(`Получено сообщение от ${userId}: "${text}"`);
@@ -213,7 +229,7 @@ async function main() {
                     const aggregatedMessage = buffer.messages.join(' ');
                     userBuffers.delete(userId);
 
-                    logWithDate(`Агрегированное сообщение пользователя ${fullName}: "${aggregatedMessage}"`);
+                    logWithDate(`Агрегированное сообщение для пользователя ${userId}: "${aggregatedMessage}"`);
 
                     let jsonData = {};
                     try {
@@ -233,25 +249,18 @@ async function main() {
                             model: "openai/gpt-oss-20b",
                             messages: [
                                 {
-                role: "user",
-                content: `сообщение от ${fullName}: ${aggregatedMessage}`
-            },
-            {
-                role: "system",
-                content: "JSON с данными: " + JSON.stringify(jsonData, null, 2)
-            },
-            {
-                role: "system",
-                content: "последние 10 сообщений в чате: " +
-                         JSON.stringify((history[userId]?.messages || []).slice(-10), null, 2)
-            }
-        
-                                
-                                
-                                /*
-                                { role: "user", content: JSON.stringify(jsonData) },
-                                ...(history[userId]?.messages || []),
-                                */
+                                    role: "user",
+                                    content: `сообщение от ${fullName}: ${aggregatedMessage}`
+                                },
+                                {
+                                    role: "system",
+                                    content: "JSON с данными: " + JSON.stringify(jsonData, null, 2)
+                                },
+                                {
+                                    role: "system",
+                                    content: "последние 10 сообщений в чате: " +
+                                             JSON.stringify((history[userId]?.messages || []).slice(-10), null, 2)
+                                }
                             ],
                             stream: false,
                         },
