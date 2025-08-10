@@ -59,7 +59,7 @@ function logWithDate(...args) {
 // === Загрузка конфига из config.json ===
 function loadConfig() {
     if (!fs.existsSync(configPath)) {
-        logWithDate('config.json не найден. Создайте файл с apiId, apiHash и API.');
+        logWithDate('config.json не найден.');
         process.exit(1);
     }
     try {
@@ -87,7 +87,7 @@ function loadHistory() {
     if (fs.existsSync(historyPath)) {
         try {
             const data = fs.readFileSync(historyPath, 'utf8');
-            logWithDate('Загрузка истории из файла history.json');
+            logWithDate('Загрузка контекста из файла history.json');
             return JSON.parse(data);
         } catch (e) {
             logWithDate('Ошибка чтения history.json, создаётся пустая история:', e);
@@ -101,7 +101,7 @@ function loadHistory() {
 function saveHistory(history) {
     try {
         fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf8');
-        logWithDate('История успешно сохранена');
+        logWithDate(`Контекст для ${userId} сохранен.`);
     } catch (e) {
         logWithDate('Ошибка сохранения history.json:', e);
     }
@@ -213,7 +213,7 @@ async function main() {
                     const aggregatedMessage = buffer.messages.join(' ');
                     userBuffers.delete(userId);
 
-                    logWithDate(`Агрегированное сообщение для пользователя ${userId}: "${aggregatedMessage}"`);
+                    logWithDate(`Агрегированное сообщение пользователя ${fullName}: "${aggregatedMessage}"`);
 
                     let jsonData = {};
                     try {
