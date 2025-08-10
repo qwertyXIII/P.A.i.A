@@ -1,0 +1,6 @@
+*.log
+config.json
+data.json
+history.json
+session.txt
+node_modules/
