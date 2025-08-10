@@ -24,8 +24,32 @@ function isAdmin(ctx) {
     return config.ADMINS.includes(ctx.from.id);
 }
 
+// Получение температуры CPU (RPI)
+function getCpuTemp() {
+    try {
+        const temp = fs.readFileSync('/sys/class/thermal/thermal_zone0/temp', 'utf8');
+        return (parseInt(temp) / 1000).toFixed(1);
+    } catch (err) {
+        return 'N/A';
+    }
+}
+
+// Получение использования диска
+function getDiskUsage() {
+    try {
+        const stat = fs.statSync('/');
+        const { size, free } = fs.statSync('/');
+        return 'N/A'; // на Node без exec трудно, оставим N/A
+    } catch {
+        return 'N/A';
+    }
+}
+
 // Бот
 const bot = new Telegraf(config.BOT_TOKEN);
+
+// Сессии в памяти
+let sessions = {};
 
 // Авторизационный middleware
 bot.use((ctx, next) => {
@@ -38,8 +62,8 @@ bot.use((ctx, next) => {
 // /start
 bot.start((ctx) => {
     ctx.reply(
-        `📜 Список команд:
-        
+`📜 Список команд:
+
 /start - список команд
 /resmon - мониторинг системы
 /ls - список файлов
@@ -59,13 +83,27 @@ bot.command('resmon', async (ctx) => {
     const updateMessage = async (messageId) => {
         while (running) {
             const load = os.loadavg().map(n => n.toFixed(2)).join(', ');
-            const mem = (os.totalmem() - os.freemem()) / os.totalmem() * 100;
+            const memUsedPerc = ((os.totalmem() - os.freemem()) / os.totalmem() * 100).toFixed(2);
+            const swapInfo = (() => {
+                try {
+                    const free = os.freemem();
+                    return `${(free / 1024 / 1024).toFixed(1)} MB Free`;
+                } catch { return 'N/A'; }
+            })();
+            const cpuTemp = getCpuTemp();
+            const uptime = `${Math.floor(os.uptime() / 3600)}h ${Math.floor((os.uptime() % 3600) / 60)}m`;
+
             try {
                 await ctx.telegram.editMessageText(
                     ctx.chat.id,
                     messageId,
                     null,
-                    `📊 *Мониторинг системы*\nCPU Load: ${load}\nRAM Usage: ${mem.toFixed(2)}%`,
+`📊 *Мониторинг системы*
+CPU Load: ${load}
+CPU Temp: ${cpuTemp}°C
+RAM Usage: ${memUsedPerc}%
+SWAP: ${swapInfo}
+Uptime: ${uptime}`,
                     {
                         parse_mode: 'Markdown',
                         reply_markup: {
@@ -155,43 +193,85 @@ bot.command('reboot', (ctx) => {
 // /edit
 bot.command('edit', (ctx) => {
     const jsonFiles = fs.readdirSync(WORK_DIR).filter(f => f.endsWith('.json'));
+    sessions[ctx.from.id] = { step: 'choose_file' };
 
     ctx.reply('📂 Выберите файл для редактирования:', {
         reply_markup: {
-            inline_keyboard: jsonFiles.map(f => [{ text: f, callback_data: `edit_file:${f}` }])
+            inline_keyboard: [
+                ...jsonFiles.map(f => [{ text: f, callback_data: `edit_file:${f}` }]),
+                [{ text: '❌ Отмена', callback_data: 'edit_cancel' }]
+            ]
         }
     });
+});
+
+bot.action('edit_cancel', (ctx) => {
+    delete sessions[ctx.from.id];
+    ctx.editMessageText('❌ Действие отменено');
 });
 
 bot.action(/^edit_file:(.+)$/, (ctx) => {
     const file = ctx.match[1];
     const filePath = path.join(WORK_DIR, file);
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    sessions[ctx.from.id] = { step: 'choose_key', file, filePath, data };
 
-    ctx.session = { editFile: file, filePath, data };
+    const content = JSON.stringify(data, null, 2);
+    const display = content.length > 4000 ? content.slice(0, 3900) + '\n... (файл обрезан)' : content;
 
-    ctx.editMessageText(`🔑 Выберите ключ для редактирования в файле *${file}*:`, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: Object.keys(data).map(k => [{ text: k, callback_data: `edit_key:${k}` }])
+    ctx.editMessageText(
+`📄 Файл *${file}*:
+\`\`\`
+${display}
+\`\`\`
+🔑 Выберите ключ для редактирования:`,
+        {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    ...Object.keys(data).map(k => [{ text: k, callback_data: `edit_key:${k}` }]),
+                    [{ text: '❌ Отмена', callback_data: 'edit_cancel' }]
+                ]
+            }
         }
-    });
+    );
 });
 
 bot.action(/^edit_key:(.+)$/, (ctx) => {
     const key = ctx.match[1];
-    ctx.session.editKey = key;
-    ctx.editMessageText(`✏ Введите новое значение для ключа *${key}*:`, { parse_mode: 'Markdown' });
+    if (!sessions[ctx.from.id]) return;
+    sessions[ctx.from.id].step = 'enter_value';
+    sessions[ctx.from.id].key = key;
+
+    ctx.editMessageText(
+`✏ Текущий ключ: *${key}*
+Текущее значение: \`${sessions[ctx.from.id].data[key]}\`
+
+Введите новое значение:`,
+        {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [[{ text: '❌ Отмена', callback_data: 'edit_cancel' }]]
+            }
+        }
+    );
 });
 
 bot.on('text', (ctx) => {
-    if (ctx.session && ctx.session.editKey) {
-        const { filePath, data, editKey } = ctx.session;
-        data[editKey] = ctx.message.text;
-        fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-        ctx.reply(`✅ Ключ *${editKey}* обновлён`, { parse_mode: 'Markdown' });
-        ctx.session = null;
-    }
+    const s = sessions[ctx.from.id];
+    if (!s || s.step !== 'enter_value') return;
+
+    s.data[s.key] = ctx.message.text;
+    fs.writeFileSync(s.filePath, JSON.stringify(s.data, null, 2));
+
+    ctx.reply(
+`✅ Файл *${s.file}* изменён
+Ключ: *${s.key}*
+Новое значение: \`${ctx.message.text}\``,
+        { parse_mode: 'Markdown' }
+    );
+
+    delete sessions[ctx.from.id];
 });
 
 bot.launch();
