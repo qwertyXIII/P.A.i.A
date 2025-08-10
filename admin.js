@@ -434,7 +434,8 @@ bot.command('resmon', async (ctx) => {
   setImmediate(updateStats);
 });
 
-bot.action(/stopresmon_(\d+)/, async (ctx) => {
+// Критическое исправление регулярки - ловим и отрицательные chatId
+bot.action(/stopresmon_(-?\d+)/, async (ctx) => {
   const chatId = Number(ctx.match[1]);
   if (!isAuthorized(ctx.from.id)) {
     await ctx.answerCbQuery('❌ Нет прав', { show_alert: true }).catch(() => {});
